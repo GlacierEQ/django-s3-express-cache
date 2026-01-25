@@ -257,7 +257,7 @@ These lifecycle rules complement the cache’s in-object header expiration. The 
 The following script demonstrates how to configure up to 1,000 lifecycle rules in a bucket.
 To run it, your IAM must have at least the following permissions:
 
-- `s3:PutLifecycleConfiguratio`
+- `s3:PutLifecycleConfiguration`
 - `s3:GetLifecycleConfiguration`
 
 
@@ -289,6 +289,40 @@ response = s3.put_bucket_lifecycle_configuration(
     LifecycleConfiguration=lifecycle_config
 )
 ```
+
+#### Required bucket policy for lifecycle rules
+
+For directory buckets, lifecycle rules will not execute unless the bucket policy explicitly grants permissions to the S3 Lifecycle service principal.
+
+Without this policy:
+
+- Expired objects will not be deleted
+- No obvious error is raised during rule creation
+
+Add a bucket policy similar to the following (replace the bucket name as needed):
+
+```json
+ {
+   "Version":"2008-10-17",  
+   "Statement":[
+      {
+         "Effect":"Allow",
+         "Principal": {
+            "Service":"lifecycle.s3.amazonaws.com"
+          },
+          "Action":"s3express:CreateSession",
+          "Condition": {
+             "StringEquals": {
+                "s3express:SessionMode": "ReadWrite"
+              }
+           },
+           "Resource":"arn:aws:s3express:us-east-2:412345678921:bucket/amzn-s3-demo-bucket--use2-az2--x-s3"
+       }
+   ]
+}
+```
+
+Once this policy is applied, S3 Lifecycle rules will be able to delete expired cache objects as expected.
 
 ### Use It!
 
