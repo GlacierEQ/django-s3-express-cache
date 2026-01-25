@@ -254,7 +254,7 @@ For example, without a `KEY_PREFIX`:
 
 These lifecycle rules complement the cache’s in-object header expiration. The header allows our implementation to short-circuit reads (treating expired items as misses), while S3 lifecycle policies ensure expired data is eventually deleted from the bucket.
 
-The following script demonstrates how to configure up to 1,000 lifecycle rules in a bucket. Note that lifecycle rules are free, so configuring 1,000 of them (the maximum) is not a big deal. 
+The following script demonstrates how to configure up to 1,000 lifecycle rules in a bucket. Note that lifecycle rules are free, so configuring 1,000 of them (the maximum) is not a big deal.
 
 To run this script, your IAM must have at least the following permissions:
 
@@ -327,7 +327,7 @@ Once this policy is applied, S3 Lifecycle rules will be able to delete expired c
 
 #### Verification
 
-You can be sure that your lifecycle rules are configured and working properly by monitoring the [CloudWatch `NumberOfObjects` metric][cw] for the bucket. If it working properly, the metric will probably slowly grow as the cache is filled and then flatline around some value. If it is misconfigured, the metric will just grow and grow (and your bill will too).
+You can be sure that your lifecycle rules are configured and working properly by monitoring the [CloudWatch `NumberOfObjects` metric][cw] for the bucket. If it is working properly, the metric will probably slowly grow as the cache is filled and then flatline around some value. If it is misconfigured, the metric will just grow and grow (and your bill will too).
 
 [cw]: https://docs.aws.amazon.com/AmazonS3/latest/userguide/metrics-dimensions.html#s3-cloudwatch-metrics
 
