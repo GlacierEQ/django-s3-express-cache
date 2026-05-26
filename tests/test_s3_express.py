@@ -4,10 +4,12 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
-from django_s3_express_cache.s3_cache import S3ExpressCacheBackend
+from django_s3_express_cache import S3ExpressCacheBackend
 
 
 class TestS3ExpressCacheBackend(unittest.TestCase):
+    DEFAULT_HEADER_FORMAT = "QHHQ"
+
     def setUp(self):
         """
         Set up mocks for boto3 S3 client and other dependencies before each test.
@@ -51,6 +53,22 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         # failed beforehand.
         self.mock_s3_client.put_object.assert_not_called()
 
+    def test_set_rejects_persistent_key_with_time_prefix(self):
+        """Ensure persistent keys cannot use time-based prefixes."""
+        test_key = "1-day:persistent"
+        test_value = "some_value"
+
+        # Persistent key (no expiration)
+        timeout = None
+        with self.assertRaisesRegex(
+            ValueError,
+            "Persistent keys cannot use a time-based prefix",
+        ):
+            self.cache.set(test_key, test_value, timeout=timeout)
+
+        # Verify no S3 write was attempted due to validation failure
+        self.mock_s3_client.put_object.assert_not_called()
+
     @patch("time.time_ns")
     def test_set_timeout_within_key_prefix(self, mock_time_ns):
         """Tests setting a key with a timeout within its defined time prefix."""
@@ -58,7 +76,7 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         fake_date = datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        mock_time_ns.return_value = fake_date.timestamp()
+        mock_time_ns.return_value = int(fake_date.timestamp() * 1e9)
 
         # A key with a 10-day time prefix.
         test_key = "10-days:my_data"
@@ -81,14 +99,29 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         expected_s3_key = "persistent_data:test_1"
         # Persistent keys are stored with an expiration time of 0.
         expected_expiration_ns = 0
-        expected_content_prefix = struct.pack("d", expected_expiration_ns)
-        expected_body = expected_content_prefix + pickle.dumps(test_value)
+        expected_content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, expected_expiration_ns, 1, 0, 0
+        )
+        expected_body = expected_content_prefix + pickle.dumps(
+            test_value, pickle.HIGHEST_PROTOCOL
+        )
 
         self.cache.set(test_key, test_value, timeout=timeout)
 
         self.mock_s3_client.put_object.assert_called_once_with(
             Bucket=self.bucket_name, Key=expected_s3_key, Body=expected_body
         )
+
+    def test_set_zero_timeout(self):
+        """Tests setting a key with timeout=0 (should not be cached)."""
+        test_key = "zero_timeout:test"
+        test_value = "should_not_be_cached"
+        timeout = 0
+
+        self.cache.set(test_key, test_value, timeout=timeout)
+
+        # Since timeout=0 means "don't cache", no S3 put_object call should happen.
+        self.mock_s3_client.put_object.assert_not_called()
 
     @patch("time.time_ns")
     def test_set_with_backend_default_timeout(self, mock_time_ns):
@@ -97,7 +130,7 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         fake_date = datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        mock_time_ns.return_value = fake_date.timestamp()
+        mock_time_ns.return_value = int(fake_date.timestamp() * 1e9)
 
         test_key = "1-day:default_timeout_data"
         test_value = {"data": [1, 2, 3]}
@@ -105,11 +138,15 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         self.mock_s3_client.put_object.return_value = {}
         # Calculate the expected expiration time based on the fixed_time and
         # the cache's default_timeout.
-        expected_expiration_ns = (
-            fake_date.timestamp() + self.cache.default_timeout * 1e9
+        expected_expiration_ns = int(
+            (fake_date.timestamp() + self.cache.default_timeout) * 1e9
         )
-        expected_content_prefix = struct.pack("d", expected_expiration_ns)
-        expected_body = expected_content_prefix + pickle.dumps(test_value)
+        expected_content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, expected_expiration_ns, 1, 0, 0
+        )
+        expected_body = expected_content_prefix + pickle.dumps(
+            test_value, pickle.HIGHEST_PROTOCOL
+        )
 
         expected_s3_key = "1-day/default_timeout_data_1"
 
@@ -144,10 +181,11 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
             hour=0, minute=0, second=0, microsecond=0
         )
         date_ten_days_ago = date_today - timedelta(days=10)
-        past_expiration_ns = date_ten_days_ago.timestamp()
-
+        past_expiration_ns = int(date_ten_days_ago.timestamp() * 1e9)
         # Create the content prefix with the past expiration timestamp.
-        content_prefix = struct.pack("d", past_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, past_expiration_ns, 1, 0, 0
+        )
 
         # Configure the mock S3 client to return the expired content.
         mock_response_body = Mock()
@@ -165,7 +203,9 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         """Verifies has_key returns True for a persistent cache entry."""
         # Simulate a persistent S3 object by setting its expiration time to 0.
         persistent_expiration_ns = 0
-        content_prefix = struct.pack("d", persistent_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, persistent_expiration_ns, 1, 0, 0
+        )
 
         # Configure the mock S3 client to return the persistent content.
         mock_response_body = Mock()
@@ -186,10 +226,12 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
             hour=0, minute=0, second=0, microsecond=0
         )
         tomorrow = date_today + timedelta(days=1)
-        future_expiration_ns = tomorrow.timestamp()
+        future_expiration_ns = int(tomorrow.timestamp() * 1e9)
 
         # Pack the future expiration time into an 8-byte prefix.
-        content_prefix = struct.pack("d", future_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, future_expiration_ns, 1, 0, 0
+        )
 
         # Configure the mock S3 client to return the content prefix.
         mock_response_body = Mock()
@@ -270,10 +312,12 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
             hour=0, minute=0, second=0, microsecond=0
         )
         date_two_days_ago = date_today - timedelta(days=2)
-        past_expiration_ns = date_two_days_ago.timestamp()
+        past_expiration_ns = int(date_two_days_ago.timestamp() * 1e9)
 
         # Create the content prefix with the past expiration timestamp.
-        content_prefix = struct.pack("d", past_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, past_expiration_ns, 1, 0, 0
+        )
 
         # Configure the mock S3 client to return only the content prefix (no
         # actual data needed for an expired key).
@@ -297,7 +341,9 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
         """Verifies `get` retrieves the correct value for a persistent key."""
         # Simulate a persistent object by setting its expiration time to 0.
         persistent_expiration_ns = 0
-        content_prefix = struct.pack("d", persistent_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, persistent_expiration_ns, 1, 0, 0
+        )
         pickled_value = pickle.dumps("persistent_value")
 
         # Configure the mock S3 client to return the content for a persistent
@@ -312,7 +358,7 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
 
         # Attempt to retrieve the persistent key.
         result = self.cache.get(
-            "1-day:persistent_key", default="default_value"
+            "no-prefix-day:persistent_key", default="default_value"
         )
         self.assertEqual(result, "persistent_value")
 
@@ -327,10 +373,12 @@ class TestS3ExpressCacheBackend(unittest.TestCase):
             hour=0, minute=0, second=0, microsecond=0
         )
         future_expiration_time = date_today + timedelta(days=2)
-        future_expiration_ns = future_expiration_time.timestamp()
+        future_expiration_ns = int(future_expiration_time.timestamp() * 1e9)
 
         # Prepare the content prefix and the pickled value that S3 would return
-        content_prefix = struct.pack("d", future_expiration_ns)
+        content_prefix = struct.pack(
+            self.DEFAULT_HEADER_FORMAT, future_expiration_ns, 1, 0, 0
+        )
         pickled_value = pickle.dumps("valid_value")
 
         # Configure the mock S3 client to return the prefixed and pickled
